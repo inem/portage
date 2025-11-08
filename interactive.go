@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"golang.org/x/term"
 )
 
 type Config struct {
@@ -18,7 +19,7 @@ type Config struct {
 
 func getConfigPath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".portmon.json")
+	return filepath.Join(home, ".portage.json")
 }
 
 func loadConfig() *Config {
@@ -139,7 +140,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			visiblePorts := m.getVisiblePorts()
 			if len(visiblePorts) > 0 && m.cursor < len(visiblePorts) {
 				port := visiblePorts[m.cursor]
-				url := fmt.Sprintf("http://localhost:%d", port.Port)
+
+				// Use the actual address if it contains IP:port, otherwise use localhost
+				var url string
+				if strings.Contains(port.Address, ":") {
+					// Address already has format like "127.0.0.1:8000" or "*:3000"
+					addr := port.Address
+					if strings.HasPrefix(addr, "*:") {
+						url = fmt.Sprintf("http://localhost:%d", port.Port)
+					} else {
+						url = fmt.Sprintf("http://%s", addr)
+					}
+				} else {
+					url = fmt.Sprintf("http://localhost:%d", port.Port)
+				}
 
 				// Use 'open' command on macOS
 				cmd := exec.Command("open", url)
@@ -194,9 +208,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // getEditor returns the editor command to use
-// Priority: PORTMON_EDITOR > EDITOR > "cursor" (default)
+// Priority: PORTAGE_EDITOR > EDITOR > "cursor" (default)
 func getEditor() string {
-	if editor := os.Getenv("PORTMON_EDITOR"); editor != "" {
+	if editor := os.Getenv("PORTAGE_EDITOR"); editor != "" {
 		return editor
 	}
 	if editor := os.Getenv("EDITOR"); editor != "" {
@@ -260,19 +274,29 @@ func (m model) View() string {
 
 	var s strings.Builder
 
-	title := "PORT MONITOR - Interactive Mode"
+	title := "PORTAGE - Interactive Mode"
 	if m.showAll {
 		title += " [ALL PORTS]"
 	}
 	s.WriteString(titleStyle.Render(title))
 	s.WriteString("\n\n")
 
+	// Get terminal width and calculate path column width
+	// Fixed columns: PORT(6) + COMMAND(16) + PID(8) + UPTIME(8) + ADDRESS(18) + spaces(5) = 61
+	termWidth := getTerminalWidth()
+	fixedWidth := 61
+	pathWidth := termWidth - fixedWidth - 2 // -2 for padding
+	if pathWidth < 20 {
+		pathWidth = 20 // Minimum width
+	}
+	totalWidth := fixedWidth + pathWidth
+
 	// Header
 	header := headerStyle.Render(fmt.Sprintf("%-6s %-16s %-8s %-8s %-18s %s",
 		"PORT", "COMMAND", "PID", "UPTIME", "ADDRESS", "PATH"))
 	s.WriteString(header)
 	s.WriteString("\n")
-	s.WriteString(strings.Repeat("─", 110))
+	s.WriteString(strings.Repeat("─", totalWidth))
 	s.WriteString("\n")
 
 	// Rows
@@ -292,7 +316,7 @@ func (m model) View() string {
 				truncate(port.PID, 8),
 				truncate(port.Uptime, 8),
 				truncate(port.Address, 18),
-				truncate(pathDisplay, 50))
+				truncate(pathDisplay, pathWidth))
 
 			if i == m.cursor {
 				line = selectedStyle.Render(line)
@@ -312,7 +336,7 @@ func (m model) View() string {
 	// Help
 	s.WriteString("\n")
 	help := helpStyle.Render(
-		"↑/k: up • ↓/j: down • enter/o: open in browser • f: Finder • e: editor • h: hide • u: unhide all • K: kill • a: toggle all • q: quit")
+		"enter/o: open in browser • f: Finder • e: editor • h: hide • u: unhide all • K: kill • a: toggle all • q: quit")
 	s.WriteString(help)
 
 	return s.String()
@@ -322,4 +346,12 @@ func runInteractive(ports []PortInfo) error {
 	p := tea.NewProgram(initialModel(ports))
 	_, err := p.Run()
 	return err
+}
+
+func getTerminalWidth() int {
+	width, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil {
+		return 110 // Default width if we can't get terminal size
+	}
+	return width
 }

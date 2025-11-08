@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -39,12 +40,20 @@ type PortInfo struct {
 var debugMode bool
 var sortBy string
 var interactive bool
+var showHistory bool
 
 func main() {
 	flag.BoolVar(&debugMode, "debug", false, "Enable debug mode with timing information")
 	flag.StringVar(&sortBy, "sort", "uptime", "Sort by: 'port' (ascending) or 'uptime' (descending)")
 	flag.BoolVar(&interactive, "i", false, "Interactive mode with navigation and controls")
+	flag.BoolVar(&showHistory, "history", false, "Show history of discovered ports and projects")
 	flag.Parse()
+
+	// If history mode, display history and exit
+	if showHistory {
+		displayHistory()
+		return
+	}
 
 	startTime := time.Now()
 
@@ -137,15 +146,33 @@ func main() {
 		fmt.Printf("[DEBUG] Filtering ports: %v\n", time.Since(filterStart))
 	}
 
+	// Load config to filter hidden ports in non-interactive mode
+	config := loadConfig()
+
+	// Filter out hidden ports from filtered list
+	filtered = filterHiddenPorts(filtered, config)
+
+	// Log newly discovered ports (only filtered ones, after hiding)
+	var filteredList []PortInfo
+	for _, portList := range filtered {
+		filteredList = append(filteredList, portList...)
+	}
+	logNewPorts(filteredList)
+
 	// Interactive mode or regular display
 	if interactive {
+		// Sort ports by uptime (descending - longest uptime first) for interactive mode
+		sort.Slice(ports, func(i, j int) bool {
+			return ports[i].UptimeSeconds > ports[j].UptimeSeconds
+		})
+
 		// Pass all ports to interactive mode
 		if err := runInteractive(ports); err != nil {
 			fmt.Printf("Error in interactive mode: %v\n", err)
 			os.Exit(1)
 		}
 	} else {
-		// Display results
+		// Display results (already filtered above)
 		displayStart := time.Now()
 		displayPorts(filtered, sortBy)
 		if debugMode {
@@ -400,4 +427,139 @@ func countTotal(portsByRange map[int][]PortInfo) int {
 		total += len(ports)
 	}
 	return total
+}
+
+func filterHiddenPorts(portsByRange map[int][]PortInfo, config *Config) map[int][]PortInfo {
+	filtered := make(map[int][]PortInfo)
+
+	for rangeStart, ports := range portsByRange {
+		filtered[rangeStart] = []PortInfo{}
+		for _, port := range ports {
+			key := fmt.Sprintf("%d-%s", port.Port, port.PID)
+			if !config.HiddenPorts[key] {
+				filtered[rangeStart] = append(filtered[rangeStart], port)
+			}
+		}
+	}
+
+	return filtered
+}
+
+func getLogPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".portage.log")
+}
+
+func logNewPorts(ports []PortInfo) {
+	logPath := getLogPath()
+
+	// Load previously seen path+port combinations
+	seenCombos := make(map[string]bool)
+	if data, err := os.ReadFile(logPath); err == nil {
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			// Extract port and path from log line
+			parts := strings.Split(line, "\t")
+			if len(parts) >= 5 {
+				key := parts[1] + ":" + parts[4] // port:path
+				seenCombos[key] = true
+			}
+		}
+	}
+
+	// Check for new path+port combinations and log them
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return // Silently fail if we can't write log
+	}
+	defer f.Close()
+
+	now := time.Now()
+	for _, port := range ports {
+		// Skip N/A and root paths
+		if port.Path == "N/A" || port.Path == "/" {
+			continue
+		}
+
+		key := fmt.Sprintf("%d:%s", port.Port, port.Path)
+		if !seenCombos[key] {
+			// Calculate when the process was actually started (now - uptime)
+			startTime := now.Add(-time.Duration(port.UptimeSeconds) * time.Second)
+			startTimeStr := startTime.Format("2006-01-02 15:04:05")
+
+			// New path+port combination discovered, log it with actual start time
+			logLine := fmt.Sprintf("%s\t%d\t%s\t%s\t%s\n",
+				startTimeStr, port.Port, port.PID, port.Command, port.Path)
+			f.WriteString(logLine)
+			seenCombos[key] = true // Mark as seen to avoid duplicates in same run
+		}
+	}
+}
+
+type HistoryEntry struct {
+	Timestamp string
+	Port      int
+	PID       string
+	Command   string
+	Path      string
+}
+
+func displayHistory() {
+	logPath := getLogPath()
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		fmt.Printf("\n%s%sNo history found. Run portage to start logging.%s\n\n", ColorBold, ColorYellow, ColorReset)
+		return
+	}
+
+	lines := strings.Split(string(data), "\n")
+	var entries []HistoryEntry
+
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) >= 5 {
+			port, _ := strconv.Atoi(parts[1])
+			entries = append(entries, HistoryEntry{
+				Timestamp: parts[0],
+				Port:      port,
+				PID:       parts[2],
+				Command:   parts[3],
+				Path:      parts[4],
+			})
+		}
+	}
+
+	if len(entries) == 0 {
+		fmt.Printf("\n%s%sNo history entries found.%s\n\n", ColorBold, ColorYellow, ColorReset)
+		return
+	}
+
+	// Print header
+	fmt.Printf("\n%s%sPORTAGE - Discovery History%s\n\n", ColorBold, ColorCyan, ColorReset)
+	fmt.Printf("%s%s┌─────────────────────┬──────┬──────────────────┬────────────────────────────────────────────────────┐%s\n", ColorBold, ColorCyan, ColorReset)
+	fmt.Printf("%s%s│ STARTED             │ PORT │ COMMAND          │ PATH                                               │%s\n", ColorBold, ColorCyan, ColorReset)
+	fmt.Printf("%s%s├─────────────────────┼──────┼──────────────────┼────────────────────────────────────────────────────┤%s\n", ColorBold, ColorCyan, ColorReset)
+
+	// Print entries (most recent first)
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		pathDisplay := shortenPath(entry.Path)
+
+		fmt.Printf("│ %-19s │ %s%-4d%s │ %-16s │ %-50s │\n",
+			entry.Timestamp,
+			ColorCyan, entry.Port, ColorReset,
+			truncate(entry.Command, 16),
+			truncate(pathDisplay, 50))
+	}
+
+	// Print footer
+	fmt.Printf("%s%s└─────────────────────┴──────┴──────────────────┴────────────────────────────────────────────────────┘%s\n", ColorBold, ColorCyan, ColorReset)
+	fmt.Printf("%s%sTotal: %d entries%s\n\n", ColorBold, ColorCyan, len(entries), ColorReset)
 }
