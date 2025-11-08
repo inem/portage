@@ -38,10 +38,12 @@ type PortInfo struct {
 
 var debugMode bool
 var sortBy string
+var interactive bool
 
 func main() {
 	flag.BoolVar(&debugMode, "debug", false, "Enable debug mode with timing information")
 	flag.StringVar(&sortBy, "sort", "uptime", "Sort by: 'port' (ascending) or 'uptime' (descending)")
+	flag.BoolVar(&interactive, "i", false, "Interactive mode with navigation and controls")
 	flag.Parse()
 
 	startTime := time.Now()
@@ -135,12 +137,21 @@ func main() {
 		fmt.Printf("[DEBUG] Filtering ports: %v\n", time.Since(filterStart))
 	}
 
-	// Display results
-	displayStart := time.Now()
-	displayPorts(filtered, sortBy)
-	if debugMode {
-		fmt.Printf("[DEBUG] Display: %v\n", time.Since(displayStart))
-		fmt.Printf("[DEBUG] Total time: %v\n", time.Since(startTime))
+	// Interactive mode or regular display
+	if interactive {
+		// Pass all ports to interactive mode
+		if err := runInteractive(ports); err != nil {
+			fmt.Printf("Error in interactive mode: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		// Display results
+		displayStart := time.Now()
+		displayPorts(filtered, sortBy)
+		if debugMode {
+			fmt.Printf("[DEBUG] Display: %v\n", time.Since(displayStart))
+			fmt.Printf("[DEBUG] Total time: %v\n", time.Since(startTime))
+		}
 	}
 }
 
