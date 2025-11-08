@@ -133,6 +133,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+
+		case "o":
+			// Open port URL in browser
+			visiblePorts := m.getVisiblePorts()
+			if len(visiblePorts) > 0 && m.cursor < len(visiblePorts) {
+				port := visiblePorts[m.cursor]
+				url := fmt.Sprintf("http://localhost:%d", port.Port)
+
+				// Use 'open' command on macOS
+				cmd := exec.Command("open", url)
+				err := cmd.Run()
+				if err != nil {
+					m.message = fmt.Sprintf("Failed to open %s: %v", url, err)
+				} else {
+					m.message = fmt.Sprintf("Opened %s in browser", url)
+				}
+			}
 		}
 	}
 
@@ -246,7 +263,7 @@ func (m model) View() string {
 	// Help
 	s.WriteString("\n")
 	help := helpStyle.Render(
-		"↑/k: up • ↓/j: down • h: hide • u: unhide all • K: kill process • a: toggle all ports • q: quit")
+		"↑/k: up • ↓/j: down • o: open in browser • h: hide • u: unhide all • K: kill • a: toggle all • q: quit")
 	s.WriteString(help)
 
 	return s.String()
