@@ -37,9 +37,11 @@ type PortInfo struct {
 }
 
 var debugMode bool
+var sortBy string
 
 func main() {
 	flag.BoolVar(&debugMode, "debug", false, "Enable debug mode with timing information")
+	flag.StringVar(&sortBy, "sort", "uptime", "Sort by: 'port' (ascending) or 'uptime' (descending)")
 	flag.Parse()
 
 	startTime := time.Now()
@@ -135,7 +137,7 @@ func main() {
 
 	// Display results
 	displayStart := time.Now()
-	displayPorts(filtered)
+	displayPorts(filtered, sortBy)
 	if debugMode {
 		fmt.Printf("[DEBUG] Display: %v\n", time.Since(displayStart))
 		fmt.Printf("[DEBUG] Total time: %v\n", time.Since(startTime))
@@ -303,7 +305,7 @@ func filterPorts(ports []PortInfo, ranges []int) map[int][]PortInfo {
 	return filtered
 }
 
-func displayPorts(portsByRange map[int][]PortInfo) {
+func displayPorts(portsByRange map[int][]PortInfo, sortOrder string) {
 	// Collect all ports into a single slice
 	var allPorts []PortInfo
 	ranges := []int{3000, 4000, 8000}
@@ -317,10 +319,18 @@ func displayPorts(portsByRange map[int][]PortInfo) {
 		return
 	}
 
-	// Sort by uptime (descending - longest uptime first)
-	sort.Slice(allPorts, func(i, j int) bool {
-		return allPorts[i].UptimeSeconds > allPorts[j].UptimeSeconds
-	})
+	// Sort based on flag
+	if sortOrder == "port" {
+		// Sort by port (ascending)
+		sort.Slice(allPorts, func(i, j int) bool {
+			return allPorts[i].Port < allPorts[j].Port
+		})
+	} else {
+		// Sort by uptime (descending - longest uptime first)
+		sort.Slice(allPorts, func(i, j int) bool {
+			return allPorts[i].UptimeSeconds > allPorts[j].UptimeSeconds
+		})
+	}
 
 	// Print header
 	fmt.Printf("\n%s%s┌──────┬──────────────────┬────────┬────────┬──────────────────┬────────────────────────────────────────────────────┐%s\n", ColorBold, ColorCyan, ColorReset)
