@@ -134,7 +134,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
-		case "o":
+		case "o", "enter":
 			// Open port URL in browser
 			visiblePorts := m.getVisiblePorts()
 			if len(visiblePorts) > 0 && m.cursor < len(visiblePorts) {
@@ -150,10 +150,59 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.message = fmt.Sprintf("Opened %s in browser", url)
 				}
 			}
+
+		case "f":
+			// Open path in Finder
+			visiblePorts := m.getVisiblePorts()
+			if len(visiblePorts) > 0 && m.cursor < len(visiblePorts) {
+				port := visiblePorts[m.cursor]
+				if port.Path != "N/A" && port.Path != "/" {
+					cmd := exec.Command("open", port.Path)
+					err := cmd.Run()
+					if err != nil {
+						m.message = fmt.Sprintf("Failed to open in Finder: %v", err)
+					} else {
+						m.message = fmt.Sprintf("Opened %s in Finder", shortenPath(port.Path))
+					}
+				} else {
+					m.message = "No path available to open"
+				}
+			}
+
+		case "e":
+			// Open path in editor
+			visiblePorts := m.getVisiblePorts()
+			if len(visiblePorts) > 0 && m.cursor < len(visiblePorts) {
+				port := visiblePorts[m.cursor]
+				if port.Path != "N/A" && port.Path != "/" {
+					editor := getEditor()
+					cmd := exec.Command(editor, port.Path)
+					err := cmd.Start() // Use Start() to not block
+					if err != nil {
+						m.message = fmt.Sprintf("Failed to open in %s: %v", editor, err)
+					} else {
+						m.message = fmt.Sprintf("Opened %s in %s", shortenPath(port.Path), editor)
+					}
+				} else {
+					m.message = "No path available to open"
+				}
+			}
 		}
 	}
 
 	return m, nil
+}
+
+// getEditor returns the editor command to use
+// Priority: PORTMON_EDITOR > EDITOR > "cursor" (default)
+func getEditor() string {
+	if editor := os.Getenv("PORTMON_EDITOR"); editor != "" {
+		return editor
+	}
+	if editor := os.Getenv("EDITOR"); editor != "" {
+		return editor
+	}
+	return "cursor" // Default to Cursor
 }
 
 func removePort(ports []PortInfo, toRemove PortInfo) []PortInfo {
@@ -263,7 +312,7 @@ func (m model) View() string {
 	// Help
 	s.WriteString("\n")
 	help := helpStyle.Render(
-		"↑/k: up • ↓/j: down • o: open in browser • h: hide • u: unhide all • K: kill • a: toggle all • q: quit")
+		"↑/k: up • ↓/j: down • enter/o: open in browser • f: Finder • e: editor • h: hide • u: unhide all • K: kill • a: toggle all • q: quit")
 	s.WriteString(help)
 
 	return s.String()
