@@ -46,6 +46,7 @@ var interactive bool
 var showHistory bool
 var jsonOutput bool
 var showAllPorts bool
+var showCursor bool
 
 func main() {
 	flag.BoolVar(&debugMode, "debug", false, "Enable debug mode with timing information")
@@ -54,7 +55,14 @@ func main() {
 	flag.BoolVar(&showHistory, "history", false, "Show history of discovered ports and projects")
 	flag.BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 	flag.BoolVar(&showAllPorts, "all", false, "Show all ports (not just 3000+, 4000+, 8000+)")
+	flag.BoolVar(&showCursor, "cursor", false, "Show active Cursor windows")
 	flag.Parse()
+
+	// If cursor mode, display cursor windows and exit
+	if showCursor {
+		displayCursorWindows()
+		return
+	}
 
 	// If history mode, display history and exit
 	if showHistory {
@@ -685,4 +693,203 @@ func displayHistory() {
 
 	fmt.Println(t.Render())
 	fmt.Printf("\n%s%sTotal: %d entries%s\n\n", ColorBold, ColorCyan, len(entries), ColorReset)
+}
+
+type CursorWorkspace struct {
+	Path         string
+	LastModified time.Time
+}
+
+func getOpenCursorWindows() map[string]bool {
+	// Get list of open Cursor windows via AppleScript
+	cmd := exec.Command("osascript", "-e", `tell application "System Events" to get name of every window of application process "Cursor"`)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	// Parse output: "filename — project-name, filename — project-name, ..."
+	// We need to extract project names (what comes after " — ")
+	openProjects := make(map[string]bool)
+
+	// Split by comma
+	windows := strings.Split(string(output), ",")
+	for _, window := range windows {
+		window = strings.TrimSpace(window)
+		// Split by " — " and get the second part (project name)
+		parts := strings.Split(window, " — ")
+		if len(parts) >= 2 {
+			projectName := strings.TrimSpace(parts[1])
+			openProjects[projectName] = true
+		} else if len(parts) == 1 {
+			// Window without " — " separator, it's the project name itself
+			projectName := strings.TrimSpace(parts[0])
+			if projectName != "" {
+				openProjects[projectName] = true
+			}
+		}
+	}
+
+	return openProjects
+}
+
+func displayCursorWindows() {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Printf("Error getting home directory: %v\n", err)
+		return
+	}
+
+	workspaceStoragePath := filepath.Join(homeDir, "Library", "Application Support", "Cursor", "User", "workspaceStorage")
+
+	// Check if directory exists
+	if _, err := os.Stat(workspaceStoragePath); os.IsNotExist(err) {
+		fmt.Printf("\n%s%sNo Cursor workspace storage found%s\n\n", ColorBold, ColorYellow, ColorReset)
+		return
+	}
+
+	// Get list of actually open windows
+	openProjects := getOpenCursorWindows()
+
+	// Read workspace directories
+	entries, err := os.ReadDir(workspaceStoragePath)
+	if err != nil {
+		fmt.Printf("Error reading workspace storage: %v\n", err)
+		return
+	}
+
+	var workspaces []CursorWorkspace
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		workspaceDir := filepath.Join(workspaceStoragePath, entry.Name())
+		stateFile := filepath.Join(workspaceDir, "state.vscdb")
+		workspaceFile := filepath.Join(workspaceDir, "workspace.json")
+
+		// Check if state.vscdb exists
+		statInfo, err := os.Stat(stateFile)
+		if err != nil {
+			continue
+		}
+
+		// Read workspace.json
+		data, err := os.ReadFile(workspaceFile)
+		if err != nil {
+			continue
+		}
+
+		// Parse JSON to get folder path
+		var workspace struct {
+			Folder string `json:"folder"`
+		}
+		if err := json.Unmarshal(data, &workspace); err != nil {
+			continue
+		}
+
+		// Extract path from file:// URL
+		folderPath := strings.TrimPrefix(workspace.Folder, "file://")
+
+		// URL decode the path
+		folderPath, err = filepath.EvalSymlinks(folderPath)
+		if err != nil {
+			// If path doesn't exist, just use the decoded string
+			folderPath = strings.TrimPrefix(workspace.Folder, "file://")
+		}
+
+		// If we have a list of open projects, filter by it
+		if openProjects != nil && len(openProjects) > 0 {
+			projectName := filepath.Base(folderPath)
+			if !openProjects[projectName] {
+				continue // Skip workspaces that don't match open windows
+			}
+		}
+
+		workspaces = append(workspaces, CursorWorkspace{
+			Path:         folderPath,
+			LastModified: statInfo.ModTime(),
+		})
+	}
+
+	if len(workspaces) == 0 {
+		if openProjects != nil && len(openProjects) > 0 {
+			fmt.Printf("\n%s%sNo open Cursor windows found%s\n\n", ColorBold, ColorYellow, ColorReset)
+		} else {
+			fmt.Printf("\n%s%sNo Cursor workspaces found%s\n\n", ColorBold, ColorYellow, ColorReset)
+		}
+		return
+	}
+
+	// Sort by modification time (least recent first, oldest at top)
+	sort.Slice(workspaces, func(i, j int) bool {
+		return workspaces[i].LastModified.Before(workspaces[j].LastModified)
+	})
+
+	// Take top 10 only if we're not filtering by open windows
+	if openProjects == nil || len(openProjects) == 0 {
+		if len(workspaces) > 10 {
+			workspaces = workspaces[:10]
+		}
+	}
+
+	now := time.Now()
+
+	// JSON output mode
+	if jsonOutput {
+		type JSONWorkspace struct {
+			Path              string `json:"path"`
+			LastModified      string `json:"last_modified"`
+			LastModifiedUnix  int64  `json:"last_modified_unix"`
+			SecondsSinceActive int64  `json:"seconds_since_active"`
+		}
+
+		var jsonWorkspaces []JSONWorkspace
+		for _, ws := range workspaces {
+			duration := now.Sub(ws.LastModified)
+			jsonWorkspaces = append(jsonWorkspaces, JSONWorkspace{
+				Path:              ws.Path,
+				LastModified:      ws.LastModified.Format(time.RFC3339),
+				LastModifiedUnix:  ws.LastModified.Unix(),
+				SecondsSinceActive: int64(duration.Seconds()),
+			})
+		}
+
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(jsonWorkspaces); err != nil {
+			fmt.Fprintf(os.Stderr, "Error encoding JSON: %v\n", err)
+		}
+		return
+	}
+
+	// Display table
+	fmt.Printf("\n%s%sCURSOR - Active Windows%s\n\n", ColorBold, ColorCyan, ColorReset)
+
+	t := table.NewWriter()
+	t.SetStyle(table.StyleRounded)
+	t.AppendHeader(table.Row{"#", "LAST ACTIVE", "PROJECT"})
+
+	for i, ws := range workspaces {
+		duration := now.Sub(ws.LastModified)
+
+		var timeStr string
+		if duration < time.Minute {
+			timeStr = "just now"
+		} else if duration < time.Hour {
+			timeStr = fmt.Sprintf("%dm ago", int(duration.Minutes()))
+		} else if duration < 24*time.Hour {
+			timeStr = fmt.Sprintf("%dh ago", int(duration.Hours()))
+		} else {
+			days := int(duration.Hours() / 24)
+			timeStr = fmt.Sprintf("%dd ago", days)
+		}
+
+		pathDisplay := shortenPath(ws.Path)
+		t.AppendRow(table.Row{i + 1, timeStr, pathDisplay})
+	}
+
+	fmt.Println(t.Render())
+	fmt.Printf("\n%s%sShowing %d most recently active workspaces%s\n\n", ColorBold, ColorCyan, len(workspaces), ColorReset)
 }
