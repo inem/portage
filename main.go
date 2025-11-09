@@ -1902,7 +1902,7 @@ func displayWorkspaceHistory() {
 	// Table output
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
-	t.AppendHeader(table.Row{"TYPE", "NAME", "LAST ACTIVE", "PATH"})
+	t.AppendHeader(table.Row{"TYPE", "NAME", "SESSION", "LAST ACTIVE", "PATH"})
 
 	for _, entry := range history {
 		lastActive := time.Unix(entry.Timestamp/1000, 0)
@@ -1922,9 +1922,21 @@ func displayWorkspaceHistory() {
 			}
 		}
 
+		// Format session info for Claude entries
+		sessionInfo := "-"
+		if entry.Type == "claude" && entry.SessionID != "" {
+			// Truncate session ID
+			sessionID := entry.SessionID
+			if len(sessionID) > 12 {
+				sessionID = sessionID[:12] + "..."
+			}
+			sessionInfo = sessionID
+		}
+
 		t.AppendRow(table.Row{
 			entry.Type,
 			entry.Name,
+			sessionInfo,
 			timeStr,
 			entry.Path,
 		})
