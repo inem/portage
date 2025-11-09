@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jedib0t/go-pretty/v6/table"
 )
 
 // Colors for terminal output
@@ -41,12 +44,16 @@ var debugMode bool
 var sortBy string
 var interactive bool
 var showHistory bool
+var jsonOutput bool
+var showAllPorts bool
 
 func main() {
 	flag.BoolVar(&debugMode, "debug", false, "Enable debug mode with timing information")
 	flag.StringVar(&sortBy, "sort", "uptime", "Sort by: 'port' (ascending) or 'uptime' (descending)")
 	flag.BoolVar(&interactive, "i", false, "Interactive mode with navigation and controls")
 	flag.BoolVar(&showHistory, "history", false, "Show history of discovered ports and projects")
+	flag.BoolVar(&jsonOutput, "json", false, "Output in JSON format")
+	flag.BoolVar(&showAllPorts, "all", false, "Show all ports (not just 3000+, 4000+, 8000+)")
 	flag.Parse()
 
 	// If history mode, display history and exit
@@ -78,7 +85,7 @@ func main() {
 	}
 
 	// Get working directory and uptime for each process (with caching for same PIDs)
-	if !debugMode {
+	if !debugMode && !jsonOutput {
 		fmt.Printf("Scanning ports")
 	}
 	scanStart := time.Now()
@@ -99,7 +106,7 @@ func main() {
 			ports[i].Uptime = uptimeCache[ports[i].PID]
 			ports[i].UptimeSeconds = uptimeSecondsCache[ports[i].PID]
 		} else {
-			if !debugMode {
+			if !debugMode && !jsonOutput {
 				fmt.Printf(".")
 			}
 			uniqueProcesses++
@@ -124,7 +131,7 @@ func main() {
 			uptimeSecondsCache[ports[i].PID] = uptimeSec
 		}
 	}
-	if !debugMode {
+	if !debugMode && !jsonOutput {
 		fmt.Printf(" done\n")
 	}
 	if debugMode {
@@ -139,9 +146,22 @@ func main() {
 		}
 	}
 
-	// Filter ports based on ranges (3000+, 4000+, 8000+)
+	// Filter ports by path (exclude system directories) unless --all flag is set
 	filterStart := time.Now()
-	filtered := filterPorts(ports, []int{3000, 4000, 8000})
+	var filtered map[int][]PortInfo
+	if showAllPorts {
+		// Show all ports - put them in a dummy range
+		filtered = map[int][]PortInfo{0: ports}
+	} else {
+		// Filter by path - exclude system directories
+		var userPorts []PortInfo
+		for _, port := range ports {
+			if isUserPort(port) {
+				userPorts = append(userPorts, port)
+			}
+		}
+		filtered = map[int][]PortInfo{0: userPorts}
+	}
 	if debugMode {
 		fmt.Printf("[DEBUG] Filtering ports: %v\n", time.Since(filterStart))
 	}
@@ -174,7 +194,13 @@ func main() {
 	} else {
 		// Display results (already filtered above)
 		displayStart := time.Now()
-		displayPorts(filtered, sortBy)
+
+		if jsonOutput {
+			displayPortsJSON(filtered, sortBy)
+		} else {
+			displayPorts(filtered, sortBy)
+		}
+
 		if debugMode {
 			fmt.Printf("[DEBUG] Display: %v\n", time.Since(displayStart))
 			fmt.Printf("[DEBUG] Total time: %v\n", time.Since(startTime))
@@ -188,6 +214,9 @@ func parseOutput(output string) []PortInfo {
 
 	// Regex to extract port number from address (e.g., *:8080 or 127.0.0.1:3000)
 	portRegex := regexp.MustCompile(`:(\d+)\s+\(LISTEN\)`)
+
+	// Track unique port+pid combinations to avoid duplicates
+	seen := make(map[string]bool)
 
 	for _, line := range lines {
 		if !strings.Contains(line, "LISTEN") {
@@ -209,6 +238,13 @@ func parseOutput(output string) []PortInfo {
 		if err != nil {
 			continue
 		}
+
+		// Create unique key for this port+pid combination
+		key := fmt.Sprintf("%d:%s", port, fields[1])
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 
 		info := PortInfo{
 			Port:    port,
@@ -325,6 +361,52 @@ func shortenPath(path string) string {
 	return path
 }
 
+func isUserPort(port PortInfo) bool {
+	// Skip N/A and root paths
+	if port.Path == "N/A" || port.Path == "/" {
+		return false
+	}
+
+	// Exclude specific commands
+	excludeCommands := []string{
+		"redis-ser", // redis-server
+	}
+	for _, cmd := range excludeCommands {
+		if port.Command == cmd {
+			return false
+		}
+	}
+
+	// Expand tilde in path for comparison
+	expandedPath := port.Path
+	if strings.HasPrefix(expandedPath, "~/") {
+		home, _ := os.UserHomeDir()
+		expandedPath = filepath.Join(home, expandedPath[2:])
+	}
+
+	// Exclude system directories
+	excludePrefixes := []string{
+		"/opt/",
+		"/usr/",
+		"/System/",
+		"/Library/",
+	}
+
+	for _, prefix := range excludePrefixes {
+		if strings.HasPrefix(expandedPath, prefix) {
+			return false
+		}
+	}
+
+	// Exclude ~/Library/
+	home, _ := os.UserHomeDir()
+	if strings.HasPrefix(expandedPath, filepath.Join(home, "Library")) {
+		return false
+	}
+
+	return true
+}
+
 func filterPorts(ports []PortInfo, ranges []int) map[int][]PortInfo {
 	filtered := make(map[int][]PortInfo)
 
@@ -346,14 +428,13 @@ func filterPorts(ports []PortInfo, ranges []int) map[int][]PortInfo {
 func displayPorts(portsByRange map[int][]PortInfo, sortOrder string) {
 	// Collect all ports into a single slice
 	var allPorts []PortInfo
-	ranges := []int{3000, 4000, 8000}
 
-	for _, rangeStart := range ranges {
-		allPorts = append(allPorts, portsByRange[rangeStart]...)
+	for _, ports := range portsByRange {
+		allPorts = append(allPorts, ports...)
 	}
 
 	if len(allPorts) == 0 {
-		fmt.Printf("\n%s%sNo ports found in monitored ranges (3000+, 4000+, 8000+)%s\n\n", ColorBold, ColorYellow, ColorReset)
+		fmt.Printf("\n%s%sNo active ports found%s\n\n", ColorBold, ColorYellow, ColorReset)
 		return
 	}
 
@@ -370,12 +451,12 @@ func displayPorts(portsByRange map[int][]PortInfo, sortOrder string) {
 		})
 	}
 
-	// Print header
-	fmt.Printf("\n%s%s┌──────┬──────────────────┬────────┬────────┬──────────────────┬────────────────────────────────────────────────────┐%s\n", ColorBold, ColorCyan, ColorReset)
-	fmt.Printf("%s%s│ PORT │ COMMAND          │ PID    │ UPTIME │ ADDRESS          │ PATH                                               │%s\n", ColorBold, ColorCyan, ColorReset)
-	fmt.Printf("%s%s├──────┼──────────────────┼────────┼────────┼──────────────────┼────────────────────────────────────────────────────┤%s\n", ColorBold, ColorCyan, ColorReset)
+	// Create table
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.AppendHeader(table.Row{"PORT", "COMMAND", "PID", "UPTIME", "ADDRESS", "PATH"})
 
-	// Print rows
+	// Add rows
 	seen := make(map[string]bool)
 	for _, port := range allPorts {
 		// Skip processes with root path
@@ -390,24 +471,25 @@ func displayPorts(portsByRange map[int][]PortInfo, sortOrder string) {
 		}
 		seen[key] = true
 
-		portColor := getPortColor(port.Port)
 		pathDisplay := shortenPath(port.Path)
 		if pathDisplay == "N/A" {
 			pathDisplay = "-"
 		}
 
-		fmt.Printf("│ %s%-4d%s │ %-16s │ %-6s │ %-6s │ %-16s │ %-50s │\n",
-			portColor, port.Port, ColorReset,
-			truncate(port.Command, 16),
-			truncate(port.PID, 6),
-			truncate(port.Uptime, 6),
-			truncate(port.Address, 16),
-			truncate(pathDisplay, 50))
+		t.AppendRow(table.Row{
+			port.Port,
+			port.Command,
+			port.PID,
+			port.Uptime,
+			port.Address,
+			pathDisplay,
+		})
 	}
 
-	// Print footer
-	fmt.Printf("%s%s└──────┴──────────────────┴────────┴────────┴──────────────────┴────────────────────────────────────────────────────┘%s\n", ColorBold, ColorCyan, ColorReset)
-	fmt.Printf("%s%sTotal: %d ports%s\n\n", ColorBold, ColorCyan, len(seen), ColorReset)
+	// Render table
+	fmt.Println()
+	t.Render()
+	fmt.Printf("\n%s%sTotal: %d ports%s\n\n", ColorBold, ColorCyan, len(seen), ColorReset)
 }
 
 func getPortColor(port int) string {
@@ -499,6 +581,41 @@ func logNewPorts(ports []PortInfo) {
 	}
 }
 
+func displayPortsJSON(portsByRange map[int][]PortInfo, sortOrder string) {
+	// Collect all ports into a single slice
+	var allPorts []PortInfo
+
+	for _, ports := range portsByRange {
+		allPorts = append(allPorts, ports...)
+	}
+
+	// Sort based on flag
+	if sortOrder == "port" {
+		sort.Slice(allPorts, func(i, j int) bool {
+			return allPorts[i].Port < allPorts[j].Port
+		})
+	} else {
+		sort.Slice(allPorts, func(i, j int) bool {
+			return allPorts[i].UptimeSeconds > allPorts[j].UptimeSeconds
+		})
+	}
+
+	// Filter out root paths
+	var filtered []PortInfo
+	for _, port := range allPorts {
+		if port.Path != "/" {
+			filtered = append(filtered, port)
+		}
+	}
+
+	// Output as JSON
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(filtered); err != nil {
+		fmt.Fprintf(os.Stderr, "Error encoding JSON: %v\n", err)
+	}
+}
+
 type HistoryEntry struct {
 	Timestamp string
 	Port      int
@@ -526,13 +643,23 @@ func displayHistory() {
 		parts := strings.Split(line, "\t")
 		if len(parts) >= 5 {
 			port, _ := strconv.Atoi(parts[1])
-			entries = append(entries, HistoryEntry{
+			entry := HistoryEntry{
 				Timestamp: parts[0],
 				Port:      port,
 				PID:       parts[2],
 				Command:   parts[3],
 				Path:      parts[4],
-			})
+			}
+
+			// Filter using isUserPort logic
+			portInfo := PortInfo{
+				Port:    port,
+				Command: entry.Command,
+				Path:    entry.Path,
+			}
+			if isUserPort(portInfo) {
+				entries = append(entries, entry)
+			}
 		}
 	}
 
@@ -543,23 +670,19 @@ func displayHistory() {
 
 	// Print header
 	fmt.Printf("\n%s%sPORTAGE - Discovery History%s\n\n", ColorBold, ColorCyan, ColorReset)
-	fmt.Printf("%s%s┌─────────────────────┬──────┬──────────────────┬────────────────────────────────────────────────────┐%s\n", ColorBold, ColorCyan, ColorReset)
-	fmt.Printf("%s%s│ STARTED             │ PORT │ COMMAND          │ PATH                                               │%s\n", ColorBold, ColorCyan, ColorReset)
-	fmt.Printf("%s%s├─────────────────────┼──────┼──────────────────┼────────────────────────────────────────────────────┤%s\n", ColorBold, ColorCyan, ColorReset)
+
+	// Create table
+	t := table.NewWriter()
+	t.SetStyle(table.StyleRounded)
+	t.AppendHeader(table.Row{"STARTED", "PORT", "COMMAND", "PATH"})
 
 	// Print entries (most recent first)
 	for i := len(entries) - 1; i >= 0; i-- {
 		entry := entries[i]
 		pathDisplay := shortenPath(entry.Path)
-
-		fmt.Printf("│ %-19s │ %s%-4d%s │ %-16s │ %-50s │\n",
-			entry.Timestamp,
-			ColorCyan, entry.Port, ColorReset,
-			truncate(entry.Command, 16),
-			truncate(pathDisplay, 50))
+		t.AppendRow(table.Row{entry.Timestamp, entry.Port, entry.Command, pathDisplay})
 	}
 
-	// Print footer
-	fmt.Printf("%s%s└─────────────────────┴──────┴──────────────────┴────────────────────────────────────────────────────┘%s\n", ColorBold, ColorCyan, ColorReset)
-	fmt.Printf("%s%sTotal: %d entries%s\n\n", ColorBold, ColorCyan, len(entries), ColorReset)
+	fmt.Println(t.Render())
+	fmt.Printf("\n%s%sTotal: %d entries%s\n\n", ColorBold, ColorCyan, len(entries), ColorReset)
 }
