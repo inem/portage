@@ -1848,9 +1848,18 @@ func displayWorkspaceHistory() {
 								continue
 							}
 
-							// Skip if path doesn't exist on disk
-							if _, err := os.Stat(decodedPath); os.IsNotExist(err) {
+							// Get directory modification time as timestamp
+							stat, err := os.Stat(decodedPath)
+							if os.IsNotExist(err) {
 								continue
+							}
+
+							var timestamp int64
+							if err == nil {
+								// Use directory modification time in milliseconds
+								timestamp = stat.ModTime().UnixMilli()
+							} else {
+								timestamp = 0 // Fallback if stat fails
 							}
 
 							// Extract project name from path
@@ -1861,7 +1870,7 @@ func displayWorkspaceHistory() {
 								Type:      "cursor",
 								Path:      decodedPath,
 								Name:      name,
-								Timestamp: 0, // No timestamp available from Cursor DB - will sort to bottom
+								Timestamp: timestamp,
 							})
 
 							// Stop when we reach the limit
