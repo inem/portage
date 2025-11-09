@@ -1752,6 +1752,13 @@ func displayClaudeHistory() {
 func displayWorkspaceHistory() {
 	var history []WorkspaceHistoryEntry
 
+	// Get active Claude sessions
+	activeClaude := getClaudeSessions()
+	activeClaudeMap := make(map[string]bool)
+	for _, session := range activeClaude {
+		activeClaudeMap[session.WorkingDir] = true
+	}
+
 	// Get Claude history
 	claudeEntries, err := loadClaudeHistory()
 	if err == nil && len(claudeEntries) > 0 {
@@ -1761,11 +1768,17 @@ func displayWorkspaceHistory() {
 			pathParts := strings.Split(session.Project, "/")
 			name := pathParts[len(pathParts)-1]
 
+			// If this session is currently active, use current time
+			timestamp := session.LastTimestamp
+			if activeClaudeMap[session.Project] {
+				timestamp = time.Now().UnixMilli()
+			}
+
 			history = append(history, WorkspaceHistoryEntry{
 				Type:      "claude",
 				Path:      session.Project,
 				Name:      name,
-				Timestamp: session.LastTimestamp,
+				Timestamp: timestamp,
 				SessionID: session.ID,
 				Messages:  session.MessageCount,
 			})
@@ -1775,6 +1788,20 @@ func displayWorkspaceHistory() {
 	// Get Cursor history
 	// Get currently open Cursor windows
 	openWindows := getOpenCursorWindows()
+
+	// Add currently open Cursor windows with current timestamp
+	for path := range openWindows {
+		// Extract project name from path
+		pathParts := strings.Split(path, "/")
+		name := pathParts[len(pathParts)-1]
+
+		history = append(history, WorkspaceHistoryEntry{
+			Type:      "cursor",
+			Path:      path,
+			Name:      name,
+			Timestamp: time.Now().UnixMilli(),
+		})
+	}
 
 	// Read workspace event log
 	events, err := readWorkspaceLog()
@@ -1790,7 +1817,7 @@ func displayWorkspaceHistory() {
 		// Extract paths where last event is "close"
 		for path, event := range lastEvents {
 			if event.Event == "close" {
-				// Skip if currently open
+				// Skip if currently open (already added above)
 				if openWindows[path] {
 					continue
 				}
@@ -1861,7 +1888,7 @@ func displayWorkspaceHistory() {
 								Type:      "cursor",
 								Path:      decodedPath,
 								Name:      name,
-								Timestamp: time.Now().UnixMilli(), // Use current time as timestamp not available
+								Timestamp: 0, // No timestamp available from Cursor DB - will sort to bottom
 							})
 
 							// Stop when we reach the limit
@@ -1905,20 +1932,24 @@ func displayWorkspaceHistory() {
 	t.AppendHeader(table.Row{"TYPE", "NAME", "SESSION", "LAST ACTIVE", "PATH"})
 
 	for _, entry := range history {
-		lastActive := time.Unix(entry.Timestamp/1000, 0)
-		timeSince := time.Since(lastActive)
-
 		var timeStr string
-		if timeSince < time.Hour {
-			timeStr = fmt.Sprintf("%dm ago", int(timeSince.Minutes()))
-		} else if timeSince < 24*time.Hour {
-			timeStr = fmt.Sprintf("%dh ago", int(timeSince.Hours()))
+		if entry.Timestamp == 0 {
+			timeStr = "unknown"
 		} else {
-			days := int(timeSince.Hours() / 24)
-			if days == 1 {
-				timeStr = "1d ago"
+			lastActive := time.Unix(entry.Timestamp/1000, 0)
+			timeSince := time.Since(lastActive)
+
+			if timeSince < time.Hour {
+				timeStr = fmt.Sprintf("%dm ago", int(timeSince.Minutes()))
+			} else if timeSince < 24*time.Hour {
+				timeStr = fmt.Sprintf("%dh ago", int(timeSince.Hours()))
 			} else {
-				timeStr = fmt.Sprintf("%dd ago", days)
+				days := int(timeSince.Hours() / 24)
+				if days == 1 {
+					timeStr = "1d ago"
+				} else {
+					timeStr = fmt.Sprintf("%dd ago", days)
+				}
 			}
 		}
 
