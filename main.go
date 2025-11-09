@@ -1861,15 +1861,8 @@ func displayWorkspaceHistory() {
 			}
 		}
 
-		typeIcon := ""
-		if entry.Type == "claude" {
-			typeIcon = "👾" // Space invader
-		} else {
-			typeIcon = "💻" // Computer
-		}
-
 		t.AppendRow(table.Row{
-			typeIcon + " " + entry.Type,
+			entry.Type,
 			entry.Name,
 			timeStr,
 			entry.Path,
