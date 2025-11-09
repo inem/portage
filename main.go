@@ -1814,12 +1814,73 @@ func displayWorkspaceHistory() {
 		}
 	}
 
+	// If we haven't reached the limit, supplement with Cursor DB history
+	if cursorHistoryLimit <= 0 || len(history) < cursorHistoryLimit {
+		homeDir, err := os.UserHomeDir()
+		if err == nil {
+			dbPath := filepath.Join(homeDir, "Library/Application Support/Cursor/User/globalStorage/state.vscdb")
+
+			// Open database
+			db, err := sql.Open("sqlite", dbPath)
+			if err == nil {
+				defer db.Close()
+
+				// Query history
+				var historyJSON string
+				err = db.QueryRow("SELECT value FROM ItemTable WHERE key='history.recentlyOpenedPathsList'").Scan(&historyJSON)
+				if err == nil {
+					// Parse JSON
+					var cursorHist CursorHistory
+					if err := json.Unmarshal([]byte(historyJSON), &cursorHist); err == nil {
+						// Add workspaces from Cursor history
+						for _, entry := range cursorHist.Entries {
+							// Convert file:///path to /path
+							path := strings.TrimPrefix(entry.FolderURI, "file://")
+
+							// URL decode the path (fixes Cyrillic and special characters)
+							decodedPath, err := url.PathUnescape(path)
+							if err != nil {
+								decodedPath = path // Fallback to original if decode fails
+							}
+
+							// Skip if currently open
+							if openWindows[decodedPath] {
+								continue
+							}
+
+							// Skip if path doesn't exist on disk
+							if _, err := os.Stat(decodedPath); os.IsNotExist(err) {
+								continue
+							}
+
+							// Extract project name from path
+							pathParts := strings.Split(decodedPath, "/")
+							name := pathParts[len(pathParts)-1]
+
+							history = append(history, WorkspaceHistoryEntry{
+								Type:      "cursor",
+								Path:      decodedPath,
+								Name:      name,
+								Timestamp: time.Now().UnixMilli(), // Use current time as timestamp not available
+							})
+
+							// Stop when we reach the limit
+							if cursorHistoryLimit > 0 && len(history) >= cursorHistoryLimit {
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Sort by timestamp (most recent first)
 	sort.Slice(history, func(i, j int) bool {
 		return history[i].Timestamp > history[j].Timestamp
 	})
 
-	// Apply limit
+	// Apply limit after adding Cursor DB entries
 	if cursorHistoryLimit > 0 && len(history) > cursorHistoryLimit {
 		history = history[:cursorHistoryLimit]
 	}
