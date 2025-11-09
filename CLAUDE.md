@@ -28,11 +28,16 @@ go build -o ~/go/bin/portage
 go install
 
 # Run
-portage                    # Show active ports
-portage --sort=port        # Sort by port number
-portage --cursor           # Show Cursor workspaces
-portage --cursor --json    # JSON output for Cursor workspaces
-portage --json             # JSON output for ports
+portage                          # Show active ports
+portage --sort=port              # Sort by port number
+portage --cursor                 # Show Cursor workspaces
+portage --cursor-history         # Show Cursor workspace close history
+portage --claude                 # Show active Claude Code sessions
+portage --claude-history         # Show Claude session history
+portage --cursor --json          # JSON output for Cursor workspaces
+portage --cursor-history --json  # JSON output for Cursor history
+portage --claude-history --json  # JSON output for Claude history
+portage --json                   # JSON output for ports
 ```
 
 ## Code Structure
@@ -51,6 +56,15 @@ portage --json             # JSON output for ports
 - Reads from `~/Library/Application Support/Cursor/User/workspaceStorage/`
 - Parses `workspace.json` files to get folder paths
 - Filters by modification time and open window status
+- Supports both table and JSON output formats
+
+### Claude Code Integration (`main.go:1400+`)
+
+- `getClaudeSessions()` - Finds active Claude Code processes and their working directories
+- `displayClaudeSessions()` - Shows currently running Claude sessions with resource usage
+- `loadClaudeHistory()` - Reads Claude history from `~/.claude/history.jsonl` (JSONL format)
+- `groupHistoryBySessions()` - Groups history entries by project and session
+- `displayClaudeHistory()` - Shows session history grouped by project with message counts
 - Supports both table and JSON output formats
 
 ## Performance Optimizations
