@@ -1752,13 +1752,6 @@ func displayClaudeHistory() {
 func displayWorkspaceHistory() {
 	var history []WorkspaceHistoryEntry
 
-	// Get active Claude sessions
-	activeClaude := getClaudeSessions()
-	activeClaudeMap := make(map[string]bool)
-	for _, session := range activeClaude {
-		activeClaudeMap[session.WorkingDir] = true
-	}
-
 	// Get Claude history
 	claudeEntries, err := loadClaudeHistory()
 	if err == nil && len(claudeEntries) > 0 {
@@ -1768,17 +1761,11 @@ func displayWorkspaceHistory() {
 			pathParts := strings.Split(session.Project, "/")
 			name := pathParts[len(pathParts)-1]
 
-			// If this session is currently active, use current time
-			timestamp := session.LastTimestamp
-			if activeClaudeMap[session.Project] {
-				timestamp = time.Now().UnixMilli()
-			}
-
 			history = append(history, WorkspaceHistoryEntry{
 				Type:      "claude",
 				Path:      session.Project,
 				Name:      name,
-				Timestamp: timestamp,
+				Timestamp: session.LastTimestamp,
 				SessionID: session.ID,
 				Messages:  session.MessageCount,
 			})
@@ -1786,22 +1773,8 @@ func displayWorkspaceHistory() {
 	}
 
 	// Get Cursor history
-	// Get currently open Cursor windows
+	// Get currently open Cursor windows (to filter them out)
 	openWindows := getOpenCursorWindows()
-
-	// Add currently open Cursor windows with current timestamp
-	for path := range openWindows {
-		// Extract project name from path
-		pathParts := strings.Split(path, "/")
-		name := pathParts[len(pathParts)-1]
-
-		history = append(history, WorkspaceHistoryEntry{
-			Type:      "cursor",
-			Path:      path,
-			Name:      name,
-			Timestamp: time.Now().UnixMilli(),
-		})
-	}
 
 	// Read workspace event log
 	events, err := readWorkspaceLog()
