@@ -73,6 +73,15 @@ type ClaudeHistorySession struct {
 	LastMessage    string `json:"last_message"`
 }
 
+type WorkspaceHistoryEntry struct {
+	Type      string `json:"type"`       // "claude" or "cursor"
+	Path      string `json:"path"`
+	Name      string `json:"name"`
+	Timestamp int64  `json:"timestamp"`  // Unix timestamp in milliseconds
+	SessionID string `json:"session_id,omitempty"` // For Claude sessions
+	Messages  int    `json:"messages,omitempty"`   // For Claude sessions
+}
+
 var debugMode bool
 var sortBy string
 var interactive bool
@@ -92,7 +101,7 @@ func main() {
 	flag.BoolVar(&debugMode, "debug", false, "Enable debug mode with timing information")
 	flag.StringVar(&sortBy, "sort", "uptime", "Sort by: 'port' (ascending) or 'uptime' (descending)")
 	flag.BoolVar(&interactive, "i", false, "Interactive mode with navigation and controls")
-	flag.BoolVar(&showHistory, "history", false, "Show history of discovered ports and projects")
+	flag.BoolVar(&showHistory, "history", false, "Show combined workspace history from both Claude and Cursor")
 	flag.BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 	flag.BoolVar(&showAllPorts, "all", false, "Show all ports (not just 3000+, 4000+, 8000+)")
 	flag.BoolVar(&showCursor, "cursor", false, "Show active Cursor windows")
@@ -100,7 +109,7 @@ func main() {
 	flag.BoolVar(&showClaudeHistory, "claude-history", false, "Show Claude session history from ~/.claude/history.jsonl")
 	flag.BoolVar(&showUnified, "unified", false, "Show unified list of ports and Cursor workspaces")
 	flag.BoolVar(&showCursorHistory, "cursor-history", false, "Show Cursor workspace history from close events")
-	flag.IntVar(&cursorHistoryLimit, "limit", 10, "Limit number of history entries (use with --cursor-history)")
+	flag.IntVar(&cursorHistoryLimit, "limit", 10, "Limit number of history entries (use with --history or --cursor-history)")
 	flag.StringVar(&logCloseWorkspace, "log-close", "", "Log workspace closure (specify full path)")
 	flag.StringVar(&logOpenWorkspace, "log-open", "", "Remove workspace from close log (specify full path)")
 	flag.Parse()
@@ -152,9 +161,9 @@ func main() {
 		return
 	}
 
-	// If history mode, display history and exit
+	// If history mode, display combined workspace history and exit
 	if showHistory {
-		displayHistory()
+		displayWorkspaceHistory()
 		return
 	}
 
@@ -1733,6 +1742,137 @@ func displayClaudeHistory() {
 			session.MessageCount,
 			timeStr,
 			session.Project,
+		})
+	}
+
+	t.SetStyle(table.StyleRounded)
+	t.Render()
+}
+
+func displayWorkspaceHistory() {
+	var history []WorkspaceHistoryEntry
+
+	// Get Claude history
+	claudeEntries, err := loadClaudeHistory()
+	if err == nil && len(claudeEntries) > 0 {
+		sessions := groupHistoryBySessions(claudeEntries)
+		for _, session := range sessions {
+			// Extract project name from path
+			pathParts := strings.Split(session.Project, "/")
+			name := pathParts[len(pathParts)-1]
+
+			history = append(history, WorkspaceHistoryEntry{
+				Type:      "claude",
+				Path:      session.Project,
+				Name:      name,
+				Timestamp: session.LastTimestamp,
+				SessionID: session.ID,
+				Messages:  session.MessageCount,
+			})
+		}
+	}
+
+	// Get Cursor history
+	// Get currently open Cursor windows
+	openWindows := getOpenCursorWindows()
+
+	// Read workspace event log
+	events, err := readWorkspaceLog()
+	if err == nil {
+		// Build a map of path -> last event
+		lastEvents := make(map[string]WorkspaceEvent)
+		for _, event := range events {
+			if existing, ok := lastEvents[event.Path]; !ok || event.Timestamp > existing.Timestamp {
+				lastEvents[event.Path] = event
+			}
+		}
+
+		// Extract paths where last event is "close"
+		for path, event := range lastEvents {
+			if event.Event == "close" {
+				// Skip if currently open
+				if openWindows[path] {
+					continue
+				}
+
+				// Skip if path doesn't exist on disk
+				if _, err := os.Stat(path); os.IsNotExist(err) {
+					continue
+				}
+
+				// Extract project name from path
+				pathParts := strings.Split(path, "/")
+				name := pathParts[len(pathParts)-1]
+
+				history = append(history, WorkspaceHistoryEntry{
+					Type:      "cursor",
+					Path:      path,
+					Name:      name,
+					Timestamp: event.Timestamp * 1000, // Convert to milliseconds
+				})
+			}
+		}
+	}
+
+	// Sort by timestamp (most recent first)
+	sort.Slice(history, func(i, j int) bool {
+		return history[i].Timestamp > history[j].Timestamp
+	})
+
+	// Apply limit
+	if cursorHistoryLimit > 0 && len(history) > cursorHistoryLimit {
+		history = history[:cursorHistoryLimit]
+	}
+
+	if jsonOutput {
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(history); err != nil {
+			fmt.Fprintf(os.Stderr, "Error encoding JSON: %v\n", err)
+		}
+		return
+	}
+
+	if len(history) == 0 {
+		fmt.Println("No workspace history found")
+		return
+	}
+
+	// Table output
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.AppendHeader(table.Row{"TYPE", "NAME", "LAST ACTIVE", "PATH"})
+
+	for _, entry := range history {
+		lastActive := time.Unix(entry.Timestamp/1000, 0)
+		timeSince := time.Since(lastActive)
+
+		var timeStr string
+		if timeSince < time.Hour {
+			timeStr = fmt.Sprintf("%dm ago", int(timeSince.Minutes()))
+		} else if timeSince < 24*time.Hour {
+			timeStr = fmt.Sprintf("%dh ago", int(timeSince.Hours()))
+		} else {
+			days := int(timeSince.Hours() / 24)
+			if days == 1 {
+				timeStr = "1d ago"
+			} else {
+				timeStr = fmt.Sprintf("%dd ago", days)
+			}
+		}
+
+		typeIcon := ""
+		if entry.Type == "claude" {
+			typeIcon = "👾" // Space invader
+		} else {
+			typeIcon = "💻" // Computer
+		}
+
+		t.AppendRow(table.Row{
+			typeIcon + " " + entry.Type,
+			entry.Name,
+			timeStr,
+			entry.Path,
 		})
 	}
 
