@@ -1516,17 +1516,12 @@ func getClaudeSessions() []ClaudeSession {
 func displayClaudeSessions() {
 	sessions := getClaudeSessions()
 
-	if jsonOutput {
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(sessions); err != nil {
-			fmt.Fprintf(os.Stderr, "Error encoding JSON: %v\n", err)
-		}
-		return
-	}
-
 	if len(sessions) == 0 {
-		fmt.Println("No active Claude Code sessions found")
+		if jsonOutput {
+			fmt.Println("[]")
+		} else {
+			fmt.Println("No active Claude Code sessions found")
+		}
 		return
 	}
 
@@ -1548,6 +1543,15 @@ func displayClaudeSessions() {
 		} else {
 			sessions[i].SessionID = "-"
 		}
+	}
+
+	if jsonOutput {
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(sessions); err != nil {
+			fmt.Fprintf(os.Stderr, "Error encoding JSON: %v\n", err)
+		}
+		return
 	}
 
 	// Table output
