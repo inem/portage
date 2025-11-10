@@ -956,6 +956,25 @@ func displayCursorWindows() {
 		return
 	}
 
+	// Deduplicate by path, keeping the most recent modification time for each path
+	workspaceMap := make(map[string]CursorWorkspace)
+	for _, ws := range workspaces {
+		if existing, exists := workspaceMap[ws.Path]; exists {
+			// Keep the one with the most recent modification time
+			if ws.LastModified.After(existing.LastModified) {
+				workspaceMap[ws.Path] = ws
+			}
+		} else {
+			workspaceMap[ws.Path] = ws
+		}
+	}
+
+	// Convert map back to slice
+	workspaces = make([]CursorWorkspace, 0, len(workspaceMap))
+	for _, ws := range workspaceMap {
+		workspaces = append(workspaces, ws)
+	}
+
 	// Sort by modification time (least recent first, oldest at top)
 	sort.Slice(workspaces, func(i, j int) bool {
 		return workspaces[i].LastModified.Before(workspaces[j].LastModified)
