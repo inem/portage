@@ -1444,7 +1444,7 @@ func displayCursorHistory() {
 
 func getClaudeSessions() []ClaudeSession {
 	// Run ps aux and grep for claude processes
-	cmd := exec.Command("sh", "-c", "ps aux | grep -i claude | grep -v grep")
+	cmd := exec.Command("sh", "-c", "ps aux | grep -i claude | grep -v grep | grep -v portage | grep -v lsof")
 	output, err := cmd.Output()
 	if err != nil {
 		// No claude processes found
